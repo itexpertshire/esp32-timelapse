@@ -26,10 +26,11 @@ License: Apache License 2.0
 #include "SD_MMC.h"
 #include "driver/rtc_io.h"
 #include <WiFi.h>
-#include <ESP32_FTPClient.h>
 #include <WiFiManager.h>
 #include <time.h>
 #include "esp_sntp.h"
+#include <ESP32_FTPClient.h>
+
 
 //!!DONT FORGET TO UPDATE Secrets.h with your WIFI Credentials!!
 char ftp_server[] = "192.168.1.199";
@@ -44,7 +45,10 @@ const long gmtOffset_sec = -28800;
 const int daylightOffset_sec = 3600;
 
 // you can pass a FTP timeout and debbug mode on the last 2 arguments
-ESP32_FTPClient ftp (ftp_server,ftp_user,ftp_pass, 10000, 0); // Disable Debug to increase Tx Speed
+ESP32_FTPClient ftp (ftp_server,ftp_user,ftp_pass, 1000, 2); // Disable Debug to increase Tx Speed
+
+
+
 
 RTC_DATA_ATTR int cur_pic = 0;
 
@@ -79,7 +83,7 @@ bool enable_ftp=true;
 void listDir(fs::FS &fs, const char * dirname, uint8_t levels);
 void deleteFile(fs::FS &fs, const char * path);
 void start_ftp_process();
-void readAndSendBigBinFile(fs::FS& fs,const char* filename, String fullpath, ESP32_FTPClient ftpClient);
+//void readAndSendBigBinFile(fs::FS& fs,const char* filename, String fullpath, ESP32_FTPClient ftpClient);
 void createDir(fs::FS &fs, const char * path);
 void logSDCard(const char * dataMessage);
 void setupLogfile();
@@ -90,6 +94,7 @@ bool updateConfigFile();
 void printLocalTime();
 String gettime();
 int change_sharpness( int sharpness );
+int get_file_size(const char *fileName);
 
 
 const static u8 OV2640_SHARPNESS_AUTO[]=
@@ -243,7 +248,7 @@ void printLocalTime(){
     Serial.println("Failed to obtain time");
       Serial.print("Connecting to ");
       Serial.println("Cudy-24G");
-      WiFi.begin("Cudy-24G", "");
+      WiFi.begin("Cudy-24G", "81249022");
       while (WiFi.status() != WL_CONNECTED) {
         delay(500);
         Serial.print(".");
@@ -334,7 +339,7 @@ void appendFile(fs::FS &fs, const char * path, const char * message) {
 
 void setup() 
 {
-  //WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); //disable brownout detector
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); //disable brownout detector
   //setCpuFrequencyMhz(240);
   //# Set to the new timezone we want & convert it
   setenv("TZ","PST8PDT",1);
@@ -359,7 +364,7 @@ void setup()
   {
     Serial.println("Card Mount Failed");
     delay(10000);
-    ESP.restart();
+    //ESP.restart();
     
   } else {
     setupLogfile();
@@ -643,7 +648,7 @@ sensor_t * s = esp_camera_sensor_get();
       } else {
         digitalWrite(LED_OUT_PIN, HIGH);     
         s = esp_camera_sensor_get();
-        s->set_wb_mode(s, 0); 
+        //s->set_wb_mode(s, 0); 
       }
          
     }
@@ -749,7 +754,7 @@ sensor_t * s = esp_camera_sensor_get();
   
 
 
-  if(enable_ftp && light>day_switch_value && (cur_pic%10) == 0)
+  if(enable_ftp  /*&& light>day_switch_value && (cur_pic%10) == 0*/)
     {
       //here we are in daylight mode
       //Not use for taking night sky picture, so switching off camera and switching on Wifi and transfer all photo to raspberry
@@ -785,7 +790,7 @@ void start_ftp_process(){
   
   WiFi.mode(WIFI_MODE_STA);
   delay(500);
-  WiFi.begin( "Cudy-24G", "" );
+  WiFi.begin( "Cudy-24G", "81249022" );
   
   Serial.println("Connecting Wifi...");
   logSDCard("Connecting Wifi..."); 
@@ -824,7 +829,7 @@ void start_ftp_process(){
   
   // Transfer a file from our SD Card in Binary Mode, which is too big for memory
 
-  Serial.printf("Listing directory: %s\n", sdcardPhotoDir);
+  //Serial.printf("Listing directory: %s\n", sdcardPhotoDir);
   
   logSDCard("Listing directory: "); 
   logSDCard(sdcardPhotoDir); 
@@ -841,6 +846,11 @@ void start_ftp_process(){
 
   File file = root.openNextFile();
   while(file){
+    if(!ftp.isConnected()){
+      ftp.CloseConnection();
+      Serial.print(" FTP Reconnecting ");
+     ftp.OpenConnection();
+    }
     if(file.isDirectory()){
       Serial.print("  DIR : ");
       Serial.println(file.name());      
@@ -852,22 +862,49 @@ void start_ftp_process(){
       String fullPath = sdcardPhotoDir;
       fullPath.concat("/"+String(file.name()));
       //Serial.printf("Reading file: %s\n", fullPath);
-      readAndSendBigBinFile(SD_MMC, file.name(),fullPath, ftp);                 // 272,546     
-      //fs.remove(fullPath);
+      //readAndSendBigBinFile(SD_MMC, file.name(),fullPath, ftp);                 // 272,546  
+      ftp.InitFile("Type I");
+      ftp.NewFile(file.name());
+      char sz = file.size();
+      int fileSize = file.size();
+      Serial.print("File Size:");
+      Serial.println(fileSize);   
+      unsigned char * downloaded_file = (unsigned char *) malloc(fileSize);    
+      size_t bytesRead = file.read(downloaded_file, fileSize); // read the file contents into the array   
+      //const char* myString = reinterpret_cast<const char*>(downloaded_file);  // for converting unsigned char to const char*
+      ftp.WriteData(downloaded_file, fileSize);   
+      free(downloaded_file);
+      ftp.CloseFile();      
+      file.close();   
+      Serial.print("Remote file size: ");
+      int siz = get_file_size(file.name());
+      Serial.println("siz-"+String(siz));
+      fs.rename(fullPath,fullPath+".txd");
     } else {
       logSDCard("File not valid for ftp.");
       logSDCard(String(file.name()).c_str()); 
     }
-    if(!ftp.isConnected()){
-     break;
-    }
+    
      file = root.openNextFile();
   }
 
 if(ftp.isConnected()){
   //transfer log file also
   File logfile = fs.open("/esplog.txt");
-  readAndSendBigBinFile(SD_MMC, logfile.name(),"/esplog.txt", ftp);
+  //readAndSendBigBinFile(SD_MMC, logfile.name(),"/esplog.txt", ftp);
+  ftp.InitFile("Type I");
+  ftp.NewFile(logfile.name());
+  char sz = logfile.size();
+  int fileSize = logfile.size();
+  Serial.print("File Size:");
+  Serial.println(fileSize);   
+  unsigned char * downloaded_file = (unsigned char *) malloc(fileSize);    
+  size_t bytesRead = logfile.read(downloaded_file, fileSize); // read the file contents into the array   
+  //const char* myString = reinterpret_cast<const char*>(downloaded_file);  // for converting unsigned char to const char*
+  ftp.WriteData(downloaded_file, fileSize);   
+  free(downloaded_file);
+  ftp.CloseFile();
+  logfile.close(); 
   ftp.CloseConnection();
 }
 
@@ -879,9 +916,28 @@ if(ftp.isConnected()){
  
 }
 
+//Get the filesize
+
+int get_file_size(const char *fileName){
+  // Get the file size
+	//const char *fileName = "myPhoto.png";
+	size_t fileSize      = 0;
+	String list[128];
+  char *result=const_cast<char*>("0");
+  
+	// Get the directory content in order to allocate buffer
+	// my server response is type=file;size=18;modify=20190731140703;unix.mode=0644;unix.uid=10183013;unix.gid=10183013;unique=809g7c8e92e4; helloworld.txt
+	//ftp.InitFile("Type A");
+	ftp.GetSize(fileName, result);
+  Serial.println(result);
+	
+  return fileSize;
+}
+
 
 // ReadFile Example from ESP32 SD_MMC Library within Core\Libraries
 // Changed to also write the output to an FTP Stream
+/*
 void readAndSendBigBinFile(fs::FS& fs,const char* filename, String fullpath, ESP32_FTPClient ftpClient) {
     ftpClient.InitFile("Type I");
     ftpClient.NewFile(filename);
@@ -914,6 +970,7 @@ void readAndSendBigBinFile(fs::FS& fs,const char* filename, String fullpath, ESP
     
     
 }
+*/
 
 void createDir(fs::FS &fs, const char * path){
   Serial.printf("Creating Dir: %s\n", path);
